@@ -239,10 +239,30 @@ impl Session {
     /// This also calls [`SessionGlobals::with_source_map`].
     #[inline]
     pub fn enter<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
-        SessionGlobals::with_or_default(|session_globals| {
-            SessionGlobals::with_source_map(self.clone_source_map(), || {
-                run_in_thread_pool_with_globals(self.jobs.get(), session_globals, f)
-            })
+        SessionGlobals::with_or_default(|session_globals| self.enter_inner(session_globals, f))
+    }
+
+    /// Sets up the thread pool and the given session globals if they haven't been already and then
+    /// executes the given closure.
+    ///
+    /// See [`enter`](Self::enter) for more details.
+    #[inline]
+    pub fn enter_with<R: Send>(
+        &self,
+        session_globals: &SessionGlobals,
+        f: impl FnOnce() -> R + Send,
+    ) -> R {
+        session_globals.maybe_set(|| self.enter_inner(session_globals, f))
+    }
+
+    #[inline]
+    fn enter_inner<R: Send>(
+        &self,
+        session_globals: &SessionGlobals,
+        f: impl FnOnce() -> R + Send,
+    ) -> R {
+        SessionGlobals::with_source_map(self.clone_source_map(), || {
+            run_in_thread_pool_with_globals(self.jobs.get(), session_globals, f)
         })
     }
 }
@@ -327,27 +347,43 @@ mod tests {
         assert!(err.to_string().contains("error: test"), "{err:?}");
     }
 
+    fn use_globals() {
+        SessionGlobals::with(|_globals| {});
+
+        let s = "hello";
+        let sym = crate::Symbol::intern(s);
+        assert_eq!(sym.as_str(), s);
+
+        let span = crate::Span::new(crate::BytePos(0), crate::BytePos(1));
+        let s = format!("{span:?}");
+        assert!(!s.contains("Span("), "{s}");
+        let s = format!("{span:#?}");
+        assert!(!s.contains("Span("), "{s}");
+    }
+
     #[test]
     fn enter() {
-        fn use_globals() {
-            SessionGlobals::with(|_globals| {});
-
-            let s = "hello";
-            let sym = crate::Symbol::intern(s);
-            assert_eq!(sym.as_str(), s);
-
-            let span = crate::Span::new(crate::BytePos(0), crate::BytePos(1));
-            let s = format!("{span:?}");
-            assert!(!s.contains("Span("), "{s}");
-            let s = format!("{span:#?}");
-            assert!(!s.contains("Span("), "{s}");
-        }
-
         let sess = Session::builder().with_buffer_emitter(ColorChoice::Never).build();
         sess.enter(use_globals);
         assert!(sess.dcx.emitted_diagnostics().unwrap().is_empty());
         assert!(sess.dcx.emitted_errors().unwrap().is_ok());
         sess.enter(|| {
+            use_globals();
+            sess.enter(use_globals);
+            use_globals();
+        });
+        assert!(sess.dcx.emitted_diagnostics().unwrap().is_empty());
+        assert!(sess.dcx.emitted_errors().unwrap().is_ok());
+    }
+
+    #[test]
+    fn enter_with() {
+        let sess = Session::builder().with_buffer_emitter(ColorChoice::Never).build();
+        let session_globals = SessionGlobals::default();
+        sess.enter_with(&session_globals, use_globals);
+        assert!(sess.dcx.emitted_diagnostics().unwrap().is_empty());
+        assert!(sess.dcx.emitted_errors().unwrap().is_ok());
+        sess.enter_with(&session_globals, || {
             use_globals();
             sess.enter(use_globals);
             use_globals();

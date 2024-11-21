@@ -42,6 +42,17 @@ impl SessionGlobals {
         SESSION_GLOBALS.set(self, f)
     }
 
+    /// Sets this instance as the global instance for the duration of the closure if it has not
+    /// already been set.
+    #[inline]
+    pub fn maybe_set<R>(&self, f: impl FnOnce() -> R) -> R {
+        if SESSION_GLOBALS.is_set() {
+            Self::with(|_| f())
+        } else {
+            SESSION_GLOBALS.set(self, f)
+        }
+    }
+
     /// Insert `source_map` into the session globals for the duration of the closure's execution.
     pub fn with_source_map<R>(source_map: Arc<SourceMap>, f: impl FnOnce() -> R) -> R {
         let prev = Self::with(|g| g.source_map.lock().replace(source_map));
